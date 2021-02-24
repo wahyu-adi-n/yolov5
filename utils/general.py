@@ -16,6 +16,9 @@ import numpy as np
 import torch
 import torchvision
 import yaml
+from torchvision import transforms
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
 
 from utils.google_utils import gsutil_getsize
 from utils.metrics import fitness
@@ -27,6 +30,17 @@ np.set_printoptions(linewidth=320, formatter={'float_kind': '{:11.5g}'.format}) 
 cv2.setNumThreads(0)  # prevent OpenCV from multithreading (incompatible with PyTorch DataLoader)
 os.environ['NUMEXPR_MAX_THREADS'] = str(min(os.cpu_count(), 8))  # NumExpr max threads
 
+class ImagesDataset(Dataset):
+    def __init__(self,image_set, transform=None):
+        self.samples = image_set
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self,idx):        
+        self.sample = self.transform(self.samples[idx])
+        return self.sample
 
 def set_logging(rank=-1):
     logging.basicConfig(
@@ -526,40 +540,80 @@ def print_mutation(hyp, results, yaml_file='hyp_evolved.yaml', bucket=''):
         os.system('gsutil cp evolve.txt %s gs://%s' % (yaml_file, bucket))  # upload
 
 
-def apply_classifier(x, model, img, im0):
-    # applies a second stage classifier to yolo outputs
-    im0 = [im0] if isinstance(im0, np.ndarray) else im0
-    for i, d in enumerate(x):  # per image
-        if d is not None and len(d):
-            d = d.clone()
+def apply_second_stage_classifier(x, model, img, device, mean, std):
+    ## ONLY IF ONE WANTS TO STORE THE CROPPED OBJECTS, THEN THEY MUST INVERSE NORMALIZE
+    # inv_normalize = transforms.Normalize(
+    # mean = [-m/s for m,s in zip(mean,std)],
+    # std = [1/s for s in std]
+    # )
+    tensor_transform = transforms.Compose([
+                                            transforms.ToTensor(),
+                                            transforms.Normalize(mean,std)
+                                        ])
+    box_image_list = []
+    not_objects_list = []
 
-            # Reshape and pad cutouts
-            b = xyxy2xywh(d[:, :4])  # boxes
-            b[:, 2:] = b[:, 2:].max(1)[0].unsqueeze(1)  # rectangle to square
-            b[:, 2:] = b[:, 2:] * 1.3 + 30  # pad
-            d[:, :4] = xywh2xyxy(b).long()
+    image = np.array(img)
+    image = torch.from_numpy(image)
+    image_transform = transforms.ToPILImage(mode='RGB')
+    image = image_transform(image)
 
-            # Rescale boxes from img_size to im0 size
-            scale_coords(img.shape[2:], d[:, :4], im0[i].shape)
+    p_predictions = torch.empty((x[0].shape[0]),7).to(device)      # Appending a dimension to prior predictions for object prediction
+    k=0
+    for i in x[0]:
 
-            # Classes
-            pred_cls1 = d[:, 5].long()
-            ims = []
-            for j, a in enumerate(d):  # per item
-                cutout = im0[i][int(a[1]):int(a[3]), int(a[0]):int(a[2])]
-                im = cv2.resize(cutout, (224, 224))  # BGR
-                # cv2.imwrite('test%i.jpg' % j, cutout)
+        i = torch.tensor([0]).float().to(device)
+        p_predictions[k] = torch.cat((x[0][k],i),0)
+        k+=1
 
-                im = im[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
-                im = np.ascontiguousarray(im, dtype=np.float32)  # uint8 to float32
-                im /= 255.0  # 0 - 255 to 0.0 - 1.0
-                ims.append(im)
+    no_object_found = True
+    for i, object_tensor in enumerate(p_predictions):
 
-            pred_cls2 = model(torch.Tensor(ims).to(d.device)).argmax(1)  # classifier prediction
-            x[i] = x[i][pred_cls1 == pred_cls2]  # retain matching class detections
+        # Only crop boxes that got prediction of 0 assuming class 0 was object
+        if object_tensor[5]!=1:
+            no_object_found = False
+            box = object_tensor.tolist()[:4]
+            left,top,right,bottom = box[0],box[1],box[2],box[3]
+            cropped_box = image.crop((left,top,right,bottom))
+            # The cropped output needs to be rescaled to Resnext input size
+            rescaled = cropped_box.resize((224,224),Image.ANTIALIAS)
+            rgb_image = rescaled.convert('RGB')
+            box_image_list.append(rgb_image)
 
-    return x
+        else:
+            not_objects_list.append(i)
 
+
+    # If no object found for 2nd stage classifier
+    if no_object_found:
+        # Returning  prior predictions as they were
+        return x
+
+    dataset = ImagesDataset(box_image_list, transform=tensor_transform)
+    dataloader = DataLoader(dataset,batch_size=len(box_image_list),shuffle=False,num_workers=4)
+
+    model=model.eval()
+    j=0
+
+    with torch.no_grad():
+        for inputs in dataloader:
+            inputs = inputs.to(device)      
+            outputs = model(inputs)
+            _, preds = torch.max(outputs,1)
+            # If one wants to store the predicted boxes in a folder, give PATH
+            # for k in range(inputs.shape[0]):
+                # img_tensor_to_PIL = image_transform(inv_normalize(inputs.cpu().data[k]))
+                # img_tensor_to_PIL.save(f"PATH_{i}_{class_names[preds[k].item()]}_{k}.jpg")
+
+    k =0
+    for i, object_tensor in enumerate(p_predictions):
+
+        # Only crop boxes that got prediction of 0 assuming class 0 was object
+        if object_tensor[5]!=1:
+            p_predictions[i][6] = preds[k].item()
+            k+=1
+
+    return [p_predictions]
 
 def increment_path(path, exist_ok=True, sep=''):
     # Increment path, i.e. runs/exp --> runs/exp{sep}0, runs/exp{sep}1 etc.
