@@ -69,9 +69,7 @@ def detect(save_img=False):
     # Second-stage classifier
     if second_classifier:
         # TODO: Provide the list of class names for 2nd model
-        # class_names2 = []
-        # class_names2 = sorted([i for i in os.listdir('/home/ml/sbhatti/latest_product_classification_dataset/all data/')])
-        class_names2 = sorted([i for i in os.listdir('/home/ml/sbhatti/latest_product_classification_dataset_33_classes/all data')])
+        class_names2 = []
         
         print(class_names2)
 
@@ -88,10 +86,8 @@ def detect(save_img=False):
 
         modelc = create_model(len(class_names2),device)
         # TODO: Provide the path to load the pre-trained image classifier model .pt file below
-        # checkpoint = torch.load('')
-        # checkpoint = torch.load('/home/ml/sbhatti/latest_product_classification_dataset/model/weights_resnext_combined_new.pt')
-        checkpoint = torch.load('/home/ml/sbhatti/action_detection_data/new_weights/weights_resnext_combined_new.pt')
-
+        checkpoint = torch.load('')
+        
         modelc.load_state_dict(checkpoint['model_state_dict'])
         modelc.to(device).eval()  
 
