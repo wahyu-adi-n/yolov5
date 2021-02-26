@@ -103,6 +103,16 @@ Done. (0.113s)
 ```
 <img src="https://user-images.githubusercontent.com/26833433/97107365-685a8d80-16c7-11eb-8c2e-83aac701d8b9.jpeg" width="500">  
 
+### To use 2nd Stage Image classifier
+In detect.py, make the following changes:
+1. Please add mean and standard deviation (std) based on the dataset of image classifier (line 27-28). 
+2. Also mention paths of image classifier checkpoint (line 89) and list of class names for image classifier (72).
+3. Mention the super class and subclass (line 76 - line 85). Currently the code is configured to have either one class that is also the class to be further classified into sub classes by image classifier OR user can mention index of super class and subclass if they are different. Code can be improvised for multiple super class and sub classes. Changes will only be needed in detect.py.
+
+After making the above changes, use the following command:
+```
+$ python yolov5/detect.py --weights <Path to YOLO.pt model> --conf 0.4 --iou-thres 0.4 --source <Image or video path> --second-classifier
+```
 ### PyTorch Hub
 
 To run **batched inference** with YOLOv5 and [PyTorch Hub](https://github.com/ultralytics/yolov5/issues/36):
